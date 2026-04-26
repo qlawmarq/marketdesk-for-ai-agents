@@ -1,0 +1,26 @@
+[project]
+name = "marketdesk-for-ai-agents"
+version = "0.1.0"
+description = "MarketDesk for AI Agents — a thin OpenBB wrapper with a uniform JSON-over-stdout contract for AI investment research agents"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "openbb>=4.4.0",
+    "openbb-cli>=1.1.0",
+    "python-dotenv>=1.0.0",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[tool.uv]
+package = false
+default-groups = []
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: offline, in-process, side-effect-free tests against pure helpers and aggregation math",
+    "integration: subprocess tests against real key-free providers (yfinance by default)",
+]

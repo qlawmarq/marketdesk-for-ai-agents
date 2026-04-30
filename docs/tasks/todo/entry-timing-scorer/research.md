@@ -18,6 +18,7 @@
   - The novel schema surface is localized and low-risk: `context`, `interpretation` (object), `data_quality_flags[]`, `analytical_caveats` (constant tuple under `data`), `basket_size` / `basket_size_sufficient`, the robust (log + MAD) volume-z estimator, and the conditional omission of `blended_score_0_100` under `--blend-profile none`. None of these cross module boundaries beyond `scripts/entry_timing_scorer.py` and one new integration-test file.
   - The one genuinely new external surface is YAML parsing for `--portfolio-file`. The repo has no direct `yaml` dependency, no existing `portfolio.yaml` on disk, and no tests that already exercise YAML. The design must pick the dependency stance explicitly (see Decision 1). **Live verification confirms `pyyaml 6.0.3` is already installed transitively via OpenBB.**
   - **Live verification (2026-04-30) surfaced three findings that modify the design** (full details in §Live Verification below): (a) Requirement 3.1's "single `TODAY+90d` nasdaq earnings fetch" is **not feasible on the current nasdaq provider** — the server returns `AttributeError: NoneType.get` at ~55 days and 403 at ~84+ days; a reliable single-shot ceiling is ~45 days. (b) `yfinance` quote returns `last_price=None` for bond ETFs (TLT / LQD observed); the wrapper needs a documented fallback chain (`last_price → prev_close → historical close`). (c) `obb.technical.clenow` returns `factor` as a **string** ("0.63826"), not a float; `obb.technical.macd` outputs `close_MACDh_12_26_9` (not `histogram`); the wrapper must normalize both.
+  - **FMP re-verification (2026-04-30, second pass with `FMP_API_KEY` set) resolves the three pending-FMP items, uncovers a fourth provider-shape problem, and drives one routing decision** (full details in §Live Verification (FMP) below; requirements amendments applied post-user-approval): (d) `provider="fmp"` earnings-calendar handles the full +90d window cleanly (no 45d ceiling, no 403 poisoning) — the analyst's basket coverage is identical at 45d and 90d (ASC / CMCL / SM hit; FLXS / TLT / LQD genuinely have none), so default `N=45` is preserved under both providers. Req 2.2 **amended** to route the earnings-calendar call to FMP under `--provider fmp` (previously pinned to nasdaq); this unlocks `--provider fmp --earnings-window-days 90` for quarterly-cycle screening. (e) `provider="fmp"` quote populates `last_price` cleanly for bond ETFs (TLT `85.70`, LQD `108.73`); Decision 9 keeps the Req 4.7 fallback universal as a resilience layer (no-op on FMP, preserves yfinance bond-ETF coverage). (f) `provider="fmp"` technical outputs are field-name-invariant with yfinance (`close_RSI_14`, `close_MACDh_12_26_9`, `factor` as string); Decision 8's suffix-search + `_to_float` pattern is confirmed provider-invariant. (g) **NEW**: FMP quote emits moving averages under `ma200` / `ma50` (not `ma_200d` / `ma_50d`) and returns `None` for `volume_average` / `volume_average_10d` — all four fields silently null out when the wrapper assumes yfinance-shape keys. Decision 11 added; Req 4.1 / 5.7 / 9.10 / 12.10 / 12.11 **amended** to mandate the provider-aware resolver and the `volume_reference_unavailable_on_provider` flag.
 
 ## Research Log
 
@@ -250,7 +251,7 @@ Three column-name mismatches, each silently producing `None` if the wrapper uses
 
 Requirements amended post-verification: Req 4.3 now mandates the `_to_float` coercion on the Clenow `factor` string; Req 4.4 now names `close_RSI_14` (case-insensitive suffix match on `"RSI"`) as the RSI extraction target; Req 4.5 now names `close_MACDh_12_26_9` (case-sensitive suffix match on `"MACDh"`) as the MACD histogram extraction target. `sector_score.py::fetch_clenow` (line 302) already handles the clenow-is-string case with `_to_float(last.get("factor"))`; the new wrapper mirrors that pattern and adopts the suffix-based column lookup for RSI / MACD that `momentum.py::_last_with` (lines 74–86) demonstrates.
 
-**FMP re-verification pending**: the OpenBB technical stack computes indicators locally from whatever `history.results` the price provider produced, so these shape quirks are expected to be provider-invariant. Design phase should still re-run the column-name probe against `--provider fmp` to confirm the assumption rather than inherit it; see Req §Constraints FMP re-verification item 3.
+**FMP re-verification (resolved 2026-04-30 second pass, Live finding L9)**: confirmed — the OpenBB technical stack computes indicators locally, so `close_RSI_14` / `close_MACDh_12_26_9` / Clenow `factor`-as-string are identical under `--provider fmp`. No provider-specific branching needed.
 
 ### Live finding L3 — `yfinance` quote returns `last_price=None` for bond ETFs
 
@@ -262,7 +263,7 @@ Fallback priority (in order of recency), mandated by the amended Req 4.7 with pe
 3. `historical[-1].close` → `data_quality_flags: "last_price_from_historical_close"`
 4. none of the above → `last_price: null` + `data_quality_flags: "last_price_unavailable"`
 
-**FMP re-verification pending**: this null-`last_price` behavior was observed against `provider="yfinance"` only. If FMP populates `last_price` for bond ETFs cleanly, Req 4.7's fallback can be narrowed to yfinance-only at a future amendment. See Req §Constraints FMP re-verification item 2.
+**FMP re-verification (resolved 2026-04-30 second pass, Live finding L8)**: FMP populates `last_price` for the same bond ETFs cleanly (TLT `85.70`, LQD `108.73`). The fallback is kept **universal** (Decision 9) as a resilience layer — on FMP it is a no-op, on yfinance it keeps bond ETFs usable.
 
 ### Live finding L4 — 90-day single-shot earnings fetch is **not reliable on the keyless nasdaq provider**
 
@@ -281,7 +282,7 @@ The default-provider fallback behavior is also unusable: `provider=seeking_alpha
 
 Requirements amended post-verification: Req 3.1 now takes the window from the new Req 3.7 flag `--earnings-window-days <N>` defaulting to `45` and bounded `[1, 90]`; Req 3.7 also bans in-process retry on failure. The pre-verification `TODAY+90d` literal has been retired.
 
-**FMP re-verification pending**: `provider=fmp` was not exercised (it requires `FMP_API_KEY`, confirmed live: `Missing credential 'fmp_api_key'`). FMP is known to host a bulk earnings-calendar endpoint that typically tolerates 90-day windows. Design phase should inject `FMP_API_KEY` and repeat the binary-search against `--provider fmp`; if FMP returns clean 90-day results, Req 3 should be amended a second time to restore 90 as the default under `--provider fmp` while keeping 45 for the default `--provider yfinance` (which routes calendar calls to nasdaq per Req 2.1). See Req §Constraints FMP re-verification item 1.
+**FMP re-verification (resolved 2026-04-30 second pass, Live finding L7)**: FMP clears the full +90d earnings-calendar window cleanly (10,559 rows at +90d, no 403 poisoning). Basket-coverage parity at +45d vs +90d on the spec basket made the "FMP → 90 default" hypothesis an empty optimization, so the default stays `N=45` under both providers. Separately, Req 2.2 was amended (post-user-approval) so that `--provider fmp` routes the earnings-calendar call to FMP as well — callers who want the full 90d window can now reach it via `--provider fmp --earnings-window-days 90`.
 
 Concrete basket impact (45-day nasdaq window, 2026-04-30 → 2026-06-14):
 
@@ -318,56 +319,58 @@ Robust vs classical volume-z estimator divergence is non-trivial on one ticker (
 
 All six tickers had ≥ 21 historical rows, non-zero volume dispersion, and positive volumes. The Req 5.5 flag paths (`volume_window_too_short`, `volume_zero_dispersion`, `volume_non_positive`) did not exercise. This is expected on a well-populated US/Liquid basket; the flags' value proposition is in edge cases (halted sessions, new listings, JP tickers with low ADV), which this probe did not cover and should be a follow-up test during implementation.
 
+
 ## Design Decisions (continued — added from live verification)
 
-### Decision 7: Default earnings-calendar window to 45 days on the keyless nasdaq path (FMP revisit pending)
+### Decision 7: Default earnings-calendar window to 45 days under **both** providers (FMP re-verified 2026-04-30)
 
-- **Context**: Live finding L4 shows nasdaq fails at ≥56d and the 403 poisons subsequent calls. Requirement 3.1's pre-verification text said 90 days. The 45-day window covers the next-quarter cycle for normal reporters and is well inside the failure ceiling. Requirements amended post-verification: Req 3.1 now takes the window from Req 3.7's `--earnings-window-days <N>` flag (default 45, range `[1, 90]`); Req 3.7 also forbids in-process retry on failure.
+- **Context**: Live finding L4 showed the keyless nasdaq path fails at ≥56d and is poisoned by a ≥84d 403. Live finding L7 confirmed `provider="fmp"` clears the full +90d window cleanly (no ceiling, no 403). Live finding L7's basket-coverage parity check further showed that for the spec basket the +45d hits and the +90d hits are **identical** — the extra 45 days buys no additional earnings proximity for the analyst's 5-calendar-day threshold (Req 7.2). Requirements remain as amended: Req 3.1 takes the window from Req 3.7's `--earnings-window-days <N>` flag (default 45, range `[1, 90]`); Req 3.7 forbids in-process retry on failure.
 - **Alternatives Considered**:
-  1. Cap the default window at 45 days; expose `--earnings-window-days` for callers who need more and accept the failure risk.
-  2. Tile the 90-day range into chunks and merge (live-tested; fails — first chunk causes 403 that poisons subsequent chunks).
-  3. Switch to FMP (requires credential; not keyless).
-  4. Switch to seeking_alpha (returned 39 rows in 90d — too sparse to be useful).
-  5. Keep the 90-day default but expect and tolerate calendar failure via the existing `data.provider_diagnostics` channel.
-- **Selected Approach**: Option 1. Set the default `N=45` and bound `[1, 90]` via argparse per Req 3.7. Expose `--earnings-window-days` so FMP-credentialled callers (or future nasdaq-ceiling improvements) can opt back in to 90.
-- **Rationale**: Chooses reliability over literal-requirement-compliance on the keyless path. The pre-verification "90d" was written before the failure mode was known; the post-verification choice is to prefer a working default and surface the knob. The analyst never acts on earnings 90 days out — the `earnings_proximity_days` threshold is 5 business days (Req 7.2).
+  1. **Universal 45d default** across both providers, `--earnings-window-days` available up to 90 (chosen).
+  2. Provider-conditional default: `45` under `yfinance` (nasdaq routing), `90` under `fmp`. Technically feasible — Live finding L7 confirms FMP tolerates 90 cleanly — but adds a CLI surprise (same flag, two different defaults) for zero basket-coverage gain on the verified spec.
+  3. Universal 90d default + tolerate nasdaq failure via `data.provider_diagnostics`. Rejected in original Decision 7; Live finding L4's 403 poisoning still makes this risky on the keyless path.
+  4. Tile the 90d range into chunks and merge — rejected in original Decision 7 (still fails on nasdaq; unnecessary on FMP since 90d single-shot works).
+- **Selected Approach**: Option 1. Hold `N=45` as the default under both `--provider yfinance` and `--provider fmp`. `--earnings-window-days` remains the escape hatch (bounded `[1, 90]` per Req 3.7); callers who want 90d coverage opt in explicitly.
+- **Rationale**: The basket-coverage parity check (Live finding L7) eliminates the benefit that motivated the "FMP → 90 default" amendment hypothesis. Keeping the default identical across providers preserves a single mental model for the analyst, keeps the integration tests single-path, and avoids a permission-to-differ cost that buys nothing on the current use case. The escape hatch (`--earnings-window-days 90`) is still available and works cleanly under FMP when a caller genuinely needs a longer horizon (e.g., quarterly-cycle screening at `--earnings-proximity-days 60`).
 - **Trade-offs**:
-  - (+) Reliable default on the keyless provider — no calendar failures on normal use.
-  - (+) No degraded-state recovery logic in the wrapper.
-  - (−) Requirements needed an amendment (delivered: Req 3.1 + Req 3.7).
-- **FMP re-verification pending** (per Req §Constraints item 1): if a design-phase probe with `FMP_API_KEY` confirms that `provider="fmp"` clears the 90-day window cleanly, amend Req 3 a second time so the default becomes 90 under `--provider fmp` while 45 remains the default under `--provider yfinance` (the keyless path).
-- **Follow-up**: `design.md` must document the flag behavior; integration test Req 12.5 asserts the default-window behavior.
+  - (+) One default value, one integration-test path.
+  - (+) No CLI-default-per-provider coupling to remember or document.
+  - (+) `--earnings-window-days 90` remains available under `--provider fmp` with zero new code — the bound is already `[1, 90]`.
+  - (−) Callers on FMP who want 90d must type the flag; documented in SKILL.md. Negligible cost.
+- **FMP re-verification status**: **Resolved.** The "FMP revisit pending" marker on the original Decision 7 is cleared. The amendment hypothesis ("default → 90 under FMP") was considered and rejected on basket-coverage evidence, not on technical infeasibility.
+- **Follow-up**: `design.md` documents the single default + escape hatch. SKILL.md includes a one-line note that `--earnings-window-days 90` is supported under `--provider fmp` (and returns ~10,500 rows total across that window based on L7's row counts) so callers have a cue for when to widen the window.
 
-### Decision 8: MACD/RSI field extraction via suffix search, Clenow factor via `_to_float` (provider-invariant, FMP revisit pending)
+### Decision 8: MACD/RSI field extraction via suffix search, Clenow factor via `_to_float` (provider-invariant, FMP re-verified 2026-04-30)
 
 - **Context**: Live finding L2 showed the pre-verification field-name assumptions return `None`. The existing `momentum.py::_last_with` pattern already solves this by searching keys for a substring; `sector_score.py` already treats `factor` as string-needing-coercion. Requirements amended post-verification: Req 4.3 / 4.4 / 4.5 now name the actual output shapes.
 - **Alternatives Considered**:
   1. Suffix-search for `MACDh` / `RSI_14` substrings in the last record; coerce Clenow `factor` via `_to_float` (mandated by amended Req 4.3–4.5).
   2. Hard-code the field names `close_MACDh_12_26_9` / `close_RSI_14` (brittle against OpenBB version bumps that rename conventions).
-  3. Use `obb.technical.*(…)`'s `.to_df()` instead of `.results`, then iloc[-1] by column regex.
+  3. Use `obb.technical.*(…)'s `.to_df()` instead of `.results`, then iloc[-1] by column regex.
 - **Selected Approach**: Option 1. Per amended Req 4.5, case-sensitive suffix match on `"MACDh"` (to avoid the `MACD` / `MACDs` / `MACDh` collision); per amended Req 4.4, case-insensitive suffix match on `"RSI"`. Coerce Clenow `factor` via the existing `_to_float` helper pattern from `sector_score.py`.
 - **Rationale**: Matches the in-repo precedent (`momentum.py::_last_with`), robust to minor OpenBB renames, and consistent across wrappers.
 - **Trade-offs**:
   - (+) Version-tolerant.
   - (−) One extra iteration per technical result — negligible for n=6.
-- **FMP re-verification pending** (per Req §Constraints item 3): OpenBB technicals are computed locally from `history.results`, so the output shape is expected to be price-provider-invariant — but verify this with `--provider fmp` in design phase before relying on the assumption.
-- **Follow-up**: `design.md` pseudocode must show the suffix-search helper and the `_to_float` wrapping on Clenow output.
+- **FMP re-verification status**: **Resolved.** Live finding L9 (2026-04-30) probed `obb.technical.{clenow,rsi,macd}(data=hist.results, …)` with `hist` sourced from both `provider="yfinance"` and `provider="fmp"`. The output column names are identical across providers (`close_RSI_14`, `close_MACDh_12_26_9`, Clenow `factor` as string). FMP-fed historical carries extra pass-through columns (`symbol`, `change`, `change_percent`, `vwap`) but the technical outputs add the same RSI/MACD suffix columns regardless. Numeric values drift slightly (~0.07% on RSI, ~0.5% on MACD-histogram) due to FMP's adjusted-close values differing from yfinance's — expected and immaterial for the 20-day-window indicators. No provider-specific extraction branching is required.
+- **Follow-up**: `design.md` pseudocode shows the suffix-search helper and the `_to_float` wrapping on Clenow output. Integration test Req 12.8 (estimator toggle) can optionally be extended to toggle `--provider` as well once FMP is a first-class path in CI; not required for MVP.
 
-### Decision 9: `last_price` fallback chain (yfinance `last_price=None` on bond ETFs; FMP revisit pending)
+### Decision 9: `last_price` fallback chain stays universal (FMP re-verified 2026-04-30; fallback preserved as a resilience layer)
 
-- **Context**: Live finding L3 showed bond ETFs (TLT, LQD) return `last_price=None` from `obb.equity.price.quote(provider="yfinance")`. Requirements amended post-verification: Req 4.7 mandates the fallback chain and per-rung `data_quality_flags`; Req 9.10 enumerates the three new flag values in the closed-enum catalog.
+- **Context**: Live finding L3 showed bond ETFs (TLT, LQD) return `last_price=None` from `obb.equity.price.quote(provider="yfinance")`. Live finding L8 confirmed `provider="fmp"` populates `last_price` for the same bond ETFs cleanly (TLT `85.70`, LQD `108.73`). Requirements amended post-verification: Req 4.7 mandates the fallback chain and per-rung `data_quality_flags`; Req 9.10 enumerates the three new flag values in the closed-enum catalog.
 - **Alternatives Considered**:
-  1. Three-step fallback chain `quote.last_price → quote.prev_close → historical[-1].close`, with a `data_quality_flag` emitted on each fallback rung (so auditors know the `last_price` is not intraday-fresh).
-  2. Fail the ticker row if `quote.last_price` is None.
-  3. Always use `historical[-1].close` and ignore `quote.last_price` (loses intraday freshness for equities).
-- **Selected Approach**: Option 1, mandated by amended Req 4.7. Emit `last_price_from_prev_close` / `last_price_from_historical_close` / `last_price_unavailable` into `data_quality_flags[]` as appropriate; the catalog of admissible flag values is Req 9.10.
-- **Rationale**: Preserves the common-case intraday-freshness of the yfinance quote endpoint while letting the wrapper degrade gracefully on bond ETFs and other asset types where yfinance leaves `last_price` null. The flag preserves the auditability that Req §Analytical-stance emphasizes.
+  1. Keep the fallback chain universal (applies regardless of provider). Simplest mental model; survives any future provider-specific `last_price` null (halted sessions, pre-market partials, new asset classes).
+  2. Scope the fallback to `--provider yfinance` only. Fewer branches on the FMP path — but removes a resilience layer for an optimization that saves no code.
+  3. Remove the fallback entirely and require users to pick `--provider fmp` when they hit a null `last_price`. Rejected — Req 4.7 is already amended to mandate the fallback, and the analyst's default path is yfinance (keyless).
+- **Selected Approach**: Option 1, matching Req 4.7's wording. Apply the fallback chain (`quote.last_price → quote.prev_close → historical[-1].close`) regardless of `--provider`. Emit `last_price_from_prev_close` / `last_price_from_historical_close` / `last_price_unavailable` into `data_quality_flags[]` as appropriate.
+- **Rationale**: The FMP finding (L8) is a *quality gain* on the FMP path, not a scope reduction on the wrapper. On FMP, the fallback is a no-op for the bond-ETF cases observed (the first rung returns a populated value), so it costs nothing. On yfinance, the fallback is what keeps bond ETFs usable. Scoping the fallback to yfinance-only would save no code, would make the wrapper silently break if FMP ever returns a null `last_price` on a symbol not covered by this probe, and would couple the wrapper to a provider quirk that may change.
 - **Trade-offs**:
-  - (+) Bond ETFs, halted sessions, and pre-market partials continue to produce usable `range_pct_52w` and `ma200_distance`.
-  - (+) New flag types expand the `data_quality_flags` enumeration (Req 9.10) but do not change the schema shape.
-  - (−) `data_quality_flags` closed-enum catalog grew by three values (now formalized in Req 9.10).
-- **FMP re-verification pending** (per Req §Constraints item 2): the `last_price=None` behavior was observed against `provider="yfinance"` only. If FMP populates `last_price` for bond ETFs, amend Req 4.7 at design phase to scope the fallback to `--provider yfinance`. Until then, the fallback applies universally.
-- **Follow-up**: `design.md` enumerates the expanded `data_quality_flags` catalog; `skills/entry-timing-scorer/SKILL.md` lists the three new flag strings verbatim.
+  - (+) Resilient across providers; never silently emits `range_pct_52w: null` when `prev_close` or `historical[-1].close` would have worked.
+  - (+) Single code path for all providers — no provider-specific branching in the `last_price` resolver.
+  - (+) The per-rung flag still fires exactly when it has value (fallback triggered); on FMP bond ETFs, no flag fires because the first rung succeeds.
+  - (−) A pedant could argue the `last_price_from_prev_close` flag is "yfinance-only" in practice. Accept — the enum is stable and the flag's job is to document *observed* fallback, not to encode which provider emitted it. `provider` is already per-row.
+- **FMP re-verification status**: **Resolved.** The "FMP revisit pending" marker on the original Decision 9 is cleared. The narrowing-hypothesis ("fallback → yfinance only") was considered and rejected on resilience grounds, not on technical infeasibility.
+- **Follow-up**: `design.md` enumerates the (unchanged) expanded `data_quality_flags` catalog; `skills/entry-timing-scorer/SKILL.md` lists the three new flag strings verbatim. SKILL.md may optionally add a one-line note that FMP typically avoids triggering the first two flags (first rung succeeds on FMP bond ETFs) as guidance for readers who see the difference across providers.
 
 ### Decision 10: Per-ticker `safe_call` protection around the earnings-calendar parse step, not just the fetch
 
@@ -380,16 +383,148 @@ All six tickers had ≥ 21 historical rows, non-zero volume dispersion, and posi
 - **Trade-offs**: None meaningful.
 - **Follow-up**: Integration test Req 12 should include a path where the calendar fetch succeeds but the basket has zero hits (e.g., bond-ETF-only basket), asserting that `provider_diagnostics` is empty / absent while every row still emits `next_earnings_date: null`.
 
+## Live Verification (FMP, 2026-04-30 second pass)
+
+Re-ran the three `FMP_API_KEY`-gated probes that were deferred in the first verification pass. `FMP_API_KEY` is now configured in `.env` (paid tier); `scripts/_env.py::apply_to_openbb` propagates it to `obb.user.credentials.fmp_api_key`. Results resolve the three "FMP re-verification pending" items flagged above in Decisions 7 / 8 / 9, and surface one new provider-shape mismatch that the pre-verification draft missed (Decision 11 follows).
+
+### Live finding L7 — FMP earnings calendar clears the full 90-day window cleanly
+
+Binary-search of the FMP earnings window (same methodology as the nasdaq pass) at `+7d`, `+30d`, `+45d`, `+56d`, `+63d`, `+70d`, `+77d`, `+84d`, `+90d`:
+
+| Window | Outcome | Row count |
+|---|---|---|
+| +7d | OK | 3423 |
+| +30d | OK | 7773 |
+| +45d | OK | 8383 |
+| +56d | OK | 8625 |
+| +63d | OK | 8796 |
+| +70d | OK | 8879 |
+| +77d | OK | 9151 |
+| +84d | OK | 9879 |
+| +90d | OK | 10559 |
+
+No `AttributeError: NoneType.get`, no 403 poisoning, no post-failure degradation. FMP returns ~18% more rows than nasdaq at +45d (8383 vs 3550) and continues to scale linearly past 90d.
+
+**Basket-coverage parity check** (spec basket `ASC CMCL FLXS SM TLT LQD`, `TODAY=2026-04-30`): hits at 45d and 90d are **identical** — ASC `2026-05-06`, CMCL `2026-05-11`, SM `2026-05-06`; FLXS / TLT / LQD genuinely have no earnings in either window. This matches the nasdaq 45d basket coverage (Live finding L4 table), confirming that: (i) the extra 45 days buys no additional coverage on this basket, and (ii) the active analyst use case (5-calendar-day proximity flag, Req 7.2) is fully served by a 45-day window.
+
+**Implication**: the 90-day window is *technically available* on FMP, but *not operationally useful* at the analyst's current threshold. Decision 7 (above) is amended to hold `N=45` as the default under **both** providers, with `--earnings-window-days` retained as the override flag. The `[1, 90]` bounds and the "no in-process retry" invariants stand unchanged. A design-phase debate on "FMP default → 90" would add no basket coverage for the current threshold and would force the CLI to carry a provider-conditional default — a cost with no payoff.
+
+### Live finding L8 — FMP quote populates `last_price` for bond ETFs
+
+| Ticker | `yfinance` last_price | `fmp` last_price |
+|---|---|---|
+| ASC | 17.84 | 17.84 |
+| CMCL | 22.59 | 22.59 |
+| FLXS | 56.89 | 56.89 |
+| SM | 31.23 | 31.23 |
+| **TLT** | **None** | **85.70** |
+| **LQD** | **None** | **108.73** |
+
+Bond ETF gap observed in Live finding L3 is closed cleanly on FMP — TLT and LQD both return populated `last_price` values. `prev_close` is populated on both providers, so the yfinance fallback chain (Req 4.7) continues to work without penalty on the yfinance path; the FMP path never needs the fallback under this probe.
+
+**Implication**: the Req 4.7 fallback chain (`quote.last_price → quote.prev_close → historical[-1].close`) is still valuable — it keeps the yfinance path usable for bond-ETF baskets (the analyst's default provider) and survives future edge cases (halted sessions, pre-market, provider-specific nulls on other asset classes). Narrowing the fallback to "yfinance only" would save no code and would make the wrapper brittle if FMP ever drops `last_price` for a specific symbol. See amended Decision 9 (above): keep the fallback universal; the FMP improvement is a quality gain on bond-ETF baskets, not a scope reduction.
+
+### Live finding L9 — FMP technical indicator shapes are invariant with yfinance
+
+Ran `obb.technical.clenow(data=hist.results, target="close", period=126)`, `obb.technical.rsi(data=…, length=14)`, `obb.technical.macd(data=…, fast=12, slow=26, signal=9)` against AAPL with `provider="fmp"` historical input and `provider="yfinance"` historical input. Per-record key sets after the technicals:
+
+| Indicator | yfinance-fed output column | fmp-fed output column | Numeric values (AAPL, 2026-04-30) |
+|---|---|---|---|
+| `clenow.factor` | `"-0.02844"` (str) | `"-0.02842"` (str) | nearly identical |
+| `rsi` | `close_RSI_14` → 57.5293 | `close_RSI_14` → 57.5958 | small drift (expected — FMP historical has slightly different adjusted closes from yfinance) |
+| `macd` (histogram) | `close_MACDh_12_26_9` → 0.6084 | `close_MACDh_12_26_9` → 0.6116 | small drift |
+
+All three technical output shapes are **identical across providers**. The only differences are the input historical data (FMP history records carry extra `symbol`, `change`, `change_percent`, `vwap` columns — pass-throughs from the FMP historical endpoint) and the slight numeric drift driven by the different adjusted-close series.
+
+**Implication**: Decision 8's suffix-search + `_to_float` pattern is confirmed provider-invariant. The wrapper's extraction code for Clenow / RSI / MACD requires **no provider-specific branching**. This was the optimistic reading in Decision 8 ("not expected to change … technicals are computed locally") — verified. Integration-test Req 12.8 that toggles `--volume-z-estimator` can be extended in a future pass to also toggle `--provider` without structural risk, although this is not required by the current requirements.
+
+### Live finding L10 — FMP quote uses `ma200` / `ma50` keys and omits `volume_average*` entirely (provider-shape mismatch)
+
+This was **not anticipated by the pre-verification draft** and is not a "FMP pending" item — it is a genuinely new finding.
+
+Comparing full quote field sets for AAPL / TLT / LQD / FLXS:
+
+| Field | yfinance | fmp |
+|---|---|---|
+| `last_price` | populated (None on bond ETFs) | populated (everywhere) |
+| `prev_close` | populated | populated |
+| `ma_200d` | populated | **`None`** |
+| `ma_50d` | populated | **`None`** |
+| `ma200` | `None` | **populated** |
+| `ma50` | `None` | **populated** |
+| `volume_average` | populated (3-month rolling) | **`None`** |
+| `volume_average_10d` | populated (10-day) | **`None`** |
+| `year_high`, `year_low` | populated | populated |
+
+FMP exposes the 200d / 50d moving averages under the keys `ma200` / `ma50` (no underscore, no `d` suffix), and does not populate `volume_average` or `volume_average_10d` at all (see full AAPL dump: both are `None`). Numerically the FMP `ma200` / `ma50` values are identical to yfinance's `ma_200d` / `ma_50d` (TLT: `88.17685` / `87.4952` on both), so the *data* is the same — only the *key names* differ, plus the `volume_average*` absence.
+
+**Consequences if the wrapper naively reads `row.get("ma_200d")` under `--provider fmp`**:
+
+1. `ma200_distance = (last_price - ma_200d) / ma_200d` → silently `None` for every FMP-fed ticker. Req 9.3 `signals.ma_200d` silently null for every row.
+2. `volume_reference.{3m_rolling, 10d}` reference fields → silently null, losing the provider-native context Req 5.7 promises.
+3. The error is silent: no exception, no data-quality flag fires, and Req 12.3's "signal present" assertion would pass for yfinance and fail for FMP — but the integration test is currently single-provider, so the regression is not caught.
+
+**Mitigation options**:
+
+- (i) **Provider-aware field resolution** (chosen, Decision 11 below): a small helper that reads quote fields from the correct key per provider: `ma_200d` under yfinance, `ma200` under fmp; same for `ma_50d` / `ma50`. Returns `None` where absent without guessing. The helper lives inline in `scripts/entry_timing_scorer.py` (no cross-wrapper re-use yet justifies `_common.py`).
+- (ii) **Read both keys unconditionally** (rejected): `row.get("ma_200d") or row.get("ma200")` would work today but hides the mismatch and silently couples the wrapper to a specific OpenBB quirk; if a future OpenBB version unifies the keys the `or` chain becomes confusing leftover code.
+- (iii) **Fall back to `historical.results` rolling mean** (rejected for MVP): computing `ma_200d` locally from a 200-day rolling mean is correct but adds scope (needs an extra `historical(period=200d+buffer)` or extended lookback) and duplicates work OpenBB already did.
+
+For `volume_average*` under FMP, there is no upstream source in the quote endpoint — Decision 11 handles this by emitting `volume_reference` with `null` values and a new `data_quality_flag: "volume_reference_unavailable_on_provider"`. The per-ticker `volume_z_20d` (Req 5.3 / 5.4) is computed from `historical.results` independently and is unaffected.
+
+**Implication**: Req 4.1 and Req 5.7 need a provider-aware read path. Req 9.10's `data_quality_flags` closed enumeration must grow by one value (`volume_reference_unavailable_on_provider`) to document the absence cleanly. These are small, additive amendments — flagged here for the design phase; the requirements file will be updated in the next requirements-amendment pass if the design phase confirms this shape.
+
+## Design Decisions (continued — added from FMP re-verification)
+
+### Decision 11: Provider-aware quote field extraction for moving averages + missing `volume_average*` on FMP
+
+- **Context**: Live finding L10 shows FMP quote uses `ma200` / `ma50` (not yfinance's `ma_200d` / `ma_50d`) and omits `volume_average` / `volume_average_10d` entirely. A wrapper that hard-codes the yfinance key names silently loses `ma200_distance` and the `volume_reference` block for every FMP-fed ticker without firing any data-quality flag. Req 4.1 (extract the MA fields from quote) and Req 5.7 (`volume_reference` sub-block) both need an adjustment.
+- **Alternatives Considered**:
+  1. Inline provider-aware resolver: a small helper `_extract_quote_fields(row: dict, provider: str) -> dict` that reads `ma_200d` under yfinance and `ma200` under fmp, same for `ma_50d` / `ma50`. `volume_average*` under FMP is set to `None` and a `volume_reference_unavailable_on_provider` data-quality flag is appended.
+  2. OR-chain: `row.get("ma_200d") or row.get("ma200")` in every consumer. Works but conflates two providers, and hides the mismatch.
+  3. Local recomputation of `ma_200d` / `ma_50d` from `historical.results` rolling mean. Correct but duplicates what the provider already did and needs a longer lookback (200-day MA needs ≥200 trading days ≈ 290 calendar days — larger than the current 210-day constant).
+- **Selected Approach**: Option 1. Add an inline helper in `scripts/entry_timing_scorer.py` that extracts quote fields with a per-provider key map:
+
+    ```python
+    _QUOTE_FIELD_MAP = {
+        "yfinance": {"ma_200d": "ma_200d", "ma_50d": "ma_50d",
+                     "volume_average": "volume_average",
+                     "volume_average_10d": "volume_average_10d"},
+        "fmp":      {"ma_200d": "ma200",   "ma_50d": "ma50",
+                     "volume_average": None,
+                     "volume_average_10d": None},
+    }
+    ```
+
+    The resolver reads the mapped key, returns `None` where the mapping is `None` (FMP volume averages), and the caller emits a `data_quality_flag: "volume_reference_unavailable_on_provider"` per ticker when `provider == "fmp"`.
+- **Rationale**: Surfaces the provider-shape mismatch at the call site instead of hiding it behind a silent `or`-chain. Keeps the common fields (`last_price`, `prev_close`, `year_high`, `year_low`, `open`, `high`, `low`) on the shared read path — only the four provider-divergent keys get mapped. The helper stays inline (no cross-wrapper re-use yet justifies promoting it to `_common.py`). The new flag value makes the FMP-path limitation auditable from the JSON output without requiring consumers to re-check the FMP quirks themselves.
+- **Trade-offs**:
+  - (+) Zero silent data loss; the FMP path's MA fields work identically to yfinance's.
+  - (+) The missing `volume_average*` on FMP is explicit, not implicit. Downstream consumers can filter or ignore based on the flag.
+  - (+) No extra API calls; the helper reads from the already-fetched quote row.
+  - (−) The closed-enum catalog in Req 9.10 grows by one value. Acceptable — the enum's purpose is exactly to document admissible flag values, and this one is a real, provider-specific, observable condition.
+  - (−) If a future provider is added (polygon, tradingeconomics, etc.), the map needs a new entry. Acceptable — providers are argparse-closed today per Req 2.3, so the map and the `--provider` choice set stay aligned.
+- **Follow-up**:
+  - Requirements amendments (applied 2026-04-30, post-user-approval):
+    - Req 4.1 **amended**: mandates the provider-aware resolver (`yfinance → ma_200d / ma_50d / volume_average / volume_average_10d`; `fmp → ma200 / ma50 / null / null`); logical field names are preserved in the `signals` output.
+    - Req 5.7 **amended**: permits `volume_reference` `value: null` under FMP and mandates the `volume_reference_unavailable_on_provider` flag (emitted once per row regardless of how many of the two windows are null).
+    - Req 9.10 **amended**: closed enumeration extended with `"volume_reference_unavailable_on_provider"`.
+    - Req 2.2 **amended** (separate from Decision 11 but motivated by the same FMP re-verification): under `--provider fmp` the earnings-calendar call is now also routed to FMP (rather than pinned to nasdaq), so that (a) FMP's higher row counts apply and (b) `--earnings-window-days 90` becomes reachable. Req 3.1 and Req 3.7 updated to match.
+    - Req 12.10 / 12.11 **added**: integration-test acceptance criteria for the provider-parametrized coverage slice.
+  - SKILL.md (design-phase deliverable): document the per-provider volume-reference difference in one short bullet so analysts don't over-read the FMP-path output, and call out that `--earnings-window-days 90` is only reliable under `--provider fmp` (yfinance path hits the nasdaq ceiling).
+
 ## Risks & Mitigations
 
 - **Risk**: `pyyaml` direct-dependency add triggers an unexpected `uv sync` resolution conflict with OpenBB's transitive pin.
   - **Mitigation**: Live-verified 2026-04-30 — `pyyaml 6.0.3` is already installed transitively; declaring it directly is a no-op install-footprint-wise. If a future OpenBB upgrade drops the transitive dep, the direct declaration ensures the wrapper keeps working.
-- **Risk (surfaced live, requirements amended)**: Nasdaq earnings calendar fails at windows ≳55 days with `AttributeError: NoneType.get`, and a 403 on ≳84 days poisons subsequent calls in the same process.
-  - **Mitigation**: Amended Req 3.1 + new Req 3.7 cap the default window at 45 days, bound overrides to `[1, 90]`, and forbid in-process retry. Decision 7 records the rationale. **FMP re-verification pending** (Req §Constraints item 1) may restore 90 as the default under `--provider fmp`.
-- **Risk (surfaced live, requirements amended)**: `yfinance` quote returns `last_price=None` for bond ETFs and other asset classes that don't have an intraday trade snapshot exposed.
-  - **Mitigation**: Amended Req 4.7 mandates the `last_price → prev_close → historical[-1].close` fallback with per-rung `data_quality_flags`; amended Req 9.10 extends the closed-enum flag catalog with `last_price_from_prev_close`, `last_price_from_historical_close`, `last_price_unavailable`. Decision 9 records the rationale. **FMP re-verification pending** (Req §Constraints item 2) may scope this fallback to `--provider yfinance` only.
-- **Risk (surfaced live, requirements amended)**: OpenBB's technical indicator outputs use non-obvious field names (`close_MACDh_12_26_9`, `close_RSI_14`) and Clenow returns `factor` as a string. A naive wrapper reading `record["histogram"]` or `float(record["factor"])` silently produces `None` or raises.
-  - **Mitigation**: Amended Req 4.3 / 4.4 / 4.5 name the actual extraction columns and mandate `_to_float` on Clenow. Decision 8 records the rationale. Integration test Req 12.3 / 12.7 must assert that `signals.macd_histogram` and `signals.rsi_14` are non-null on a known-active equity (not just "field present"). **FMP re-verification pending** (Req §Constraints item 3) is expected to be a no-op since technicals are computed locally.
+- **Risk (surfaced live, requirements amended, FMP re-verified 2026-04-30)**: Nasdaq earnings calendar fails at windows ≳55 days with `AttributeError: NoneType.get`, and a 403 on ≳84 days poisons subsequent calls in the same process.
+  - **Mitigation**: Amended Req 3.1 + Req 3.7 cap the default window at 45 days, bound overrides to `[1, 90]`, and forbid in-process retry. Decision 7 records the rationale. **FMP re-verification (Live finding L7) resolved**: FMP clears the full +90d window cleanly, but basket-coverage parity between +45d and +90d makes "FMP → 90 default" an empty optimization; the default stays 45 universally and `--earnings-window-days 90` is available as an explicit opt-in (works cleanly only under FMP).
+- **Risk (surfaced live, requirements amended, FMP re-verified 2026-04-30)**: `yfinance` quote returns `last_price=None` for bond ETFs and other asset classes that don't have an intraday trade snapshot exposed.
+  - **Mitigation**: Amended Req 4.7 mandates the `last_price → prev_close → historical[-1].close` fallback with per-rung `data_quality_flags`; amended Req 9.10 extends the closed-enum flag catalog with `last_price_from_prev_close`, `last_price_from_historical_close`, `last_price_unavailable`. Decision 9 records the rationale. **FMP re-verification (Live finding L8) resolved**: FMP populates `last_price` for bond ETFs cleanly (TLT `85.70`, LQD `108.73`), but Decision 9 keeps the fallback universal as a resilience layer — it is a no-op on FMP's happy path and keeps the wrapper robust across future provider quirks.
+- **Risk (surfaced live, requirements amended, FMP re-verified 2026-04-30)**: OpenBB's technical indicator outputs use non-obvious field names (`close_MACDh_12_26_9`, `close_RSI_14`) and Clenow returns `factor` as a string. A naive wrapper reading `record["histogram"]` or `float(record["factor"])` silently produces `None` or raises.
+  - **Mitigation**: Amended Req 4.3 / 4.4 / 4.5 name the actual extraction columns and mandate `_to_float` on Clenow. Decision 8 records the rationale. Integration test Req 12.3 / 12.7 must assert that `signals.macd_histogram` and `signals.rsi_14` are non-null on a known-active equity (not just "field present"). **FMP re-verification (Live finding L9) resolved**: technical output shapes are invariant across providers (`close_RSI_14`, `close_MACDh_12_26_9`, Clenow `factor` as string). No provider-specific branching is required.
+- **Risk (newly surfaced during FMP re-verification, requirements amendment recommended)**: FMP quote exposes moving averages under `ma200` / `ma50` (not yfinance's `ma_200d` / `ma_50d`) and omits `volume_average` / `volume_average_10d` entirely. A wrapper that hard-codes the yfinance keys silently loses `ma200_distance` and the `volume_reference` block for every FMP-fed ticker.
+  - **Mitigation**: Decision 11 introduces an inline provider-aware field map that reads `ma_200d`/`ma_50d` under yfinance and `ma200`/`ma50` under fmp (same numeric data, different keys), and emits `null` + a new `volume_reference_unavailable_on_provider` data-quality flag for `volume_average*` under FMP. Requirements amendments to Req 4.1 / 5.7 / 9.10 are recommended at design phase. Integration test coverage: parametrize `test_entry_timing_scorer.py` over `--provider` and auto-skip FMP tests when `FMP_API_KEY` is absent (Req 12.2 pattern).
 - **Risk**: Robust (log + MAD) volume-z estimator produces surprising values on low-volume JP (`.T`) tickers or pre-market US sessions.
   - **Mitigation**: The three Req 5.5 data-quality flags (`volume_non_positive`, `volume_zero_dispersion`, `volume_window_too_short`) cover the expected edge cases; the output contract is "emit null + flag", not "silently return a degenerate number". Integration test Req 12.8 runs both estimators against the same basket and locks in behavior.
 - **Risk**: Cross-sectional z-score on tiny baskets (n < 5) produces interpretable-looking 0–100 scores that agents over-weight.
@@ -415,4 +550,5 @@ All six tickers had ≥ 21 historical rows, non-zero volume dispersion, and posi
 - `tests/integration/_sanity.py` — shared assertion helpers (`assert_finite_in_range`, ordered-date checks) available to the new integration-test file.
 - `tests/integration/conftest.py::run_wrapper_or_xfail` — xfail-on-transient-failure helper; the new test must invoke the wrapper through this.
 - `pyproject.toml` — direct-dependency list to amend (`pyyaml>=6.0`; live-verified 6.0.3 already transitively present).
-- Live verification artifacts (2026-04-30, retained under `/tmp/`): `probe_scorer.py` (initial full probe), `probe_columns.py` (field-name diagnosis), `probe_earnings{,2,3,4}.py` (nasdaq window binary-search), `probe_full.py` (end-to-end run reproducing the ranked output).
+- Live verification artifacts (2026-04-30, first pass, retained under `/tmp/`): `probe_scorer.py` (initial full probe), `probe_columns.py` (field-name diagnosis), `probe_earnings{,2,3,4}.py` (nasdaq window binary-search), `probe_full.py` (end-to-end run reproducing the ranked output).
+- Live verification artifacts (2026-04-30, FMP second pass, retained under `/tmp/`): `probe_fmp_earnings.py` (FMP earnings-calendar window binary-search 7→90d), `probe_fmp_quote.py` (FMP quote endpoint against spec basket), `probe_fmp_quote_detail.py` (yfinance-vs-FMP quote key comparison for `ma200`/`ma50`/`volume_average*`), `probe_fmp_technical.py` (technical-indicator shape invariance between providers), `probe_fmp_basket_earnings.py` (FMP basket coverage at +45d and +90d).

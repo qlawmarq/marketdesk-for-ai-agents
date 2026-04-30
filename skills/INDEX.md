@@ -44,9 +44,10 @@ inside each group follows the README feature numbering.
 
 | Skill                                   | Purpose                                                                      | Covers                    |
 | --------------------------------------- | ---------------------------------------------------------------------------- | ------------------------- |
-| [`sector_score`](sector_score/SKILL.md) | Composite momentum + risk score over a sector / theme / factor ETF universe. | `scripts/sector_score.py` |
-| [`momentum`](momentum/SKILL.md)         | Single technical indicator (clenow / rsi / macd / cones / adx) per ticker.   | `scripts/momentum.py`     |
-| [`factors`](factors/SKILL.md)           | Fama-French factor return time series by region and frequency.               | `scripts/factors.py`      |
+| [`sector_score`](sector_score/SKILL.md)               | Composite momentum + risk score over a sector / theme / factor ETF universe.                                   | `scripts/sector_score.py`        |
+| [`momentum`](momentum/SKILL.md)                       | Single technical indicator (clenow / rsi / macd / cones / adx) per ticker.                                     | `scripts/momentum.py`            |
+| [`entry-timing-scorer`](entry-timing-scorer/SKILL.md) | Per-ticker entry-timing analytics (trend axis + mean-reversion axis + earnings-proximity flag) over a basket.  | `scripts/entry_timing_scorer.py` |
+| [`factors`](factors/SKILL.md)                         | Fama-French factor return time series by region and frequency.                                                 | `scripts/factors.py`             |
 
 ### Macro & commodity
 

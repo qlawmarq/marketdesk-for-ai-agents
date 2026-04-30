@@ -992,6 +992,7 @@ dependencies = [
     { name = "openbb" },
     { name = "openbb-cli" },
     { name = "python-dotenv" },
+    { name = "pyyaml" },
 ]
 
 [package.dev-dependencies]
@@ -1004,6 +1005,7 @@ requires-dist = [
     { name = "openbb", specifier = ">=4.4.0" },
     { name = "openbb-cli", specifier = ">=1.1.0" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
+    { name = "pyyaml", specifier = ">=6.0" },
 ]
 
 [package.metadata.requires-dev]

@@ -1,0 +1,22 @@
+{
+  "feature_name": "entry-timing-scorer",
+  "created_at": "2026-04-28T17:00:00+09:00",
+  "updated_at": "2026-04-29T00:00:00+09:00",
+  "language": "en",
+  "phase": "initialized",
+  "approvals": {
+    "requirements": {
+      "generated": false,
+      "approved": false
+    },
+    "design": {
+      "generated": false,
+      "approved": false
+    },
+    "tasks": {
+      "generated": false,
+      "approved": false
+    }
+  },
+  "ready_for_implementation": false
+}

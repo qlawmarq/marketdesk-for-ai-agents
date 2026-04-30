@@ -310,6 +310,24 @@ def _decide_exit_and_warnings(
     return fatal, warnings
 
 
+def is_fatal_aggregate(rows: list[dict[str, Any]]) -> ErrorCategory | None:
+    """Peek the fatal-exit gate without emitting.
+
+    Returns the `ErrorCategory` that `aggregate_emit` would treat as a
+    top-level fatal error (currently `CREDENTIAL` or `PLAN_INSUFFICIENT`)
+    when every row failed with that single category, else `None`. Mixed
+    fatal categories collapse to `None`, matching the existing internal
+    contract used by `aggregate_emit`.
+
+    Used by wrappers with a non-JSON success path (e.g. `--format md`)
+    that need to fall back to `aggregate_emit`'s JSON envelope on a
+    fatal exit so the recovery hint still reaches the agent.
+    """
+
+    fatal, _ = _decide_exit_and_warnings(rows)
+    return fatal
+
+
 def _fatal_error_message(category: ErrorCategory) -> str:
     """Top-level error string for an all-rows-in-category fatal emit."""
 

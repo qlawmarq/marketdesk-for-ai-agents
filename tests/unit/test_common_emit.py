@@ -20,6 +20,7 @@ from _common import (  # type: ignore[import-not-found]
     PLAN_PREFIX,
     ErrorCategory,
     aggregate_emit,
+    is_fatal_aggregate,
     single_emit,
 )
 
@@ -672,3 +673,46 @@ def test_envelope_root_stays_within_allowlist(
     assert rc == 0
     envelope = _read_json(capsys)
     assert set(envelope.keys()) == {"source", "collected_at", "tool", "data"}
+
+
+# ---------------------------------------------------------------------------
+# is_fatal_aggregate — public peek at the fatal-exit gate (Req 5.8)
+# ---------------------------------------------------------------------------
+
+
+def test_is_fatal_aggregate_empty_rows_returns_none() -> None:
+    assert is_fatal_aggregate([]) is None
+
+
+def test_is_fatal_aggregate_all_success_returns_none() -> None:
+    rows = [_ok("AAPL"), _ok("MSFT")]
+    assert is_fatal_aggregate(rows) is None
+
+
+def test_is_fatal_aggregate_mixed_success_and_credential_returns_none() -> None:
+    rows = [_ok("AAPL"), _failed("MSFT", category=ErrorCategory.CREDENTIAL)]
+    assert is_fatal_aggregate(rows) is None
+
+
+def test_is_fatal_aggregate_all_credential_returns_credential_category() -> None:
+    rows = [
+        _failed("AAPL", category=ErrorCategory.CREDENTIAL),
+        _failed("MSFT", category=ErrorCategory.CREDENTIAL),
+    ]
+    assert is_fatal_aggregate(rows) is ErrorCategory.CREDENTIAL
+
+
+def test_is_fatal_aggregate_all_plan_insufficient_returns_plan_category() -> None:
+    rows = [
+        _failed("AAPL", category=ErrorCategory.PLAN_INSUFFICIENT),
+        _failed("MSFT", category=ErrorCategory.PLAN_INSUFFICIENT),
+    ]
+    assert is_fatal_aggregate(rows) is ErrorCategory.PLAN_INSUFFICIENT
+
+
+def test_is_fatal_aggregate_mixed_credential_and_plan_returns_none() -> None:
+    rows = [
+        _failed("AAPL", category=ErrorCategory.CREDENTIAL),
+        _failed("MSFT", category=ErrorCategory.PLAN_INSUFFICIENT),
+    ]
+    assert is_fatal_aggregate(rows) is None

@@ -355,6 +355,14 @@ WRAPPER_HAPPY_ARGV: dict[str, list[str]] = {
         "--provider",
         "yfinance",
     ],
+    "sector_stock_screener": [
+        "--universe",
+        "sector-spdr",
+        "--top-sectors",
+        "2",
+        "--top-stocks-per-sector",
+        "5",
+    ],
     "insider": ["AAPL", "--provider", "sec"],
     "institutional": ["AAPL", "--provider", "fmp"],
     "filings": ["AAPL", "--provider", "sec"],
@@ -408,6 +416,7 @@ WRAPPER_INVALID_ARGV: dict[str, list[str]] = {
         "--provider",
         "__invalid_provider__",
     ],
+    "sector_stock_screener": ["--universe", "__invalid_universe__"],
     "insider": ["AAPL", "--provider", "__invalid_provider__"],
     "institutional": ["AAPL", "--provider", "__invalid_provider__"],
     "filings": ["AAPL", "--provider", "__invalid_provider__"],
@@ -426,6 +435,10 @@ _HAPPY_ARGV_REQUIRED_KEYS: dict[str, tuple[str, str]] = {
     "institutional": (
         "FMP_API_KEY",
         "FMP_API_KEY unset; institutional happy-path requires FMP free tier",
+    ),
+    "sector_stock_screener": (
+        "FMP_API_KEY",
+        "FMP_API_KEY unset; sector_stock_screener happy-path requires FMP Starter+",
     ),
 }
 

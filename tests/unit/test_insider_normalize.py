@@ -261,6 +261,25 @@ def test_strip_role_prefix_passes_through_unmarked_text() -> None:
     assert _strip_role_prefix("Chairman of the Board") == "Chairman of the Board"
 
 
+def test_strip_role_prefix_returns_none_for_nan_float() -> None:
+    assert _strip_role_prefix(float("nan")) is None
+
+
+def test_strip_role_prefix_returns_none_for_numeric() -> None:
+    assert _strip_role_prefix(1.0) is None
+    assert _strip_role_prefix(0) is None
+
+
+def test_strip_role_prefix_returns_none_for_dict() -> None:
+    assert _strip_role_prefix({}) is None
+    assert _strip_role_prefix({"k": "v"}) is None
+
+
+def test_strip_role_prefix_returns_none_for_list() -> None:
+    assert _strip_role_prefix([]) is None
+    assert _strip_role_prefix(["a"]) is None
+
+
 def test_compute_total_value_multiplies_when_both_positive() -> None:
     assert _compute_total_value(100, 150.5) == 15050.0
 
@@ -577,6 +596,13 @@ def test_normalize_fmp_record_computes_total_value() -> None:
 def test_normalize_fmp_record_footnote_is_null_when_missing() -> None:
     out = _normalize_fmp_record(_fmp_sample_record())
     assert out["footnote"] is None
+
+
+def test_normalize_fmp_record_nan_owner_title_yields_null_reporter_title() -> None:
+    rec = _fmp_sample_record()
+    rec["owner_title"] = float("nan")
+    out = _normalize_fmp_record(rec)
+    assert out["reporter_title"] is None
 
 
 def test_normalize_fmp_record_missing_keys_emit_null_not_absent() -> None:

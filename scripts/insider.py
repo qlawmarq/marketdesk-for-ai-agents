@@ -155,9 +155,18 @@ def _extract_fmp_code(value: str | None) -> str | None:
     return match.group(1) if match else None
 
 
-def _strip_role_prefix(value: str | None) -> str | None:
-    """Remove FMP role prefixes / infixes from a reporter title."""
+def _strip_role_prefix(value: Any) -> str | None:
+    """Remove FMP role prefixes / infixes from a reporter title.
 
+    Non-string inputs (``float('nan')``, numeric, dict/list, ``None``) are
+    treated as missing and collapsed to ``None``. FMP's pandas-backed
+    ``owner_title`` column surfaces null rows as ``NaN`` floats rather than
+    Python ``None`` — those must not raise ``AttributeError`` in the rfind /
+    startswith branches below.
+    """
+
+    if not isinstance(value, str):
+        return None
     if not value:
         return value
     for marker in _INFIX_MARKERS:
@@ -413,6 +422,11 @@ def _render_markdown(
             error = row.get("error", "")
             lines.append(f"_error_category_: {category} — {error}")
         else:
+            normalized_failed = row.get("owner_title_normalized_failed", 0)
+            if normalized_failed > 0:
+                lines.append(
+                    f"_owner_title_normalized_failed: {normalized_failed}_"
+                )
             records = row.get("records", [])
             if not records:
                 empty_line = "_no records in window_"
@@ -468,6 +482,14 @@ def fetch(
     call_result = safe_call(obb.equity.ownership.insider_trading, **kwargs)
     if not call_result.get("ok"):
         return {"symbol": symbol, "provider": provider, **call_result}
+    owner_title_normalized_failed = 0
+    if provider == "fmp":
+        owner_title_normalized_failed = sum(
+            1
+            for r in call_result["records"]
+            if r.get("owner_title") is not None
+            and not isinstance(r.get("owner_title"), str)
+        )
     normalized = [_normalize_record(r, provider) for r in call_result["records"]]
     in_window = _filter_by_days(normalized, days)
     kept, dropped_unparseable = _apply_code_filter(in_window, codes_filter)
@@ -477,6 +499,7 @@ def fetch(
         "ok": True,
         "records": kept,
         "dropped_unparseable_codes": dropped_unparseable,
+        "owner_title_normalized_failed": owner_title_normalized_failed,
     }
 
 

@@ -1,9 +1,5 @@
 # `insider.py` FMP provider: `_strip_role_prefix` 型エラー修正要件
 
-起票日: 2026-05-01
-起票者: investment-analyst
-承認: 2026-05-01 ユーザー指示（inbox.md「ツールのバグについては shared/openbb/docs/tasks/todo に起票」）、reviewer 5/1 verdict agree（補強4 で記載項目推奨）
-
 ## 目的
 
 `shared/openbb/scripts/insider.py` の FMP provider 経路で稀に発生する `AttributeError: 'float' object has no attribute 'rfind'` を解消し、FMP 補完を SEC と並列して安全に実行できる状態へ復旧する。
@@ -31,6 +27,7 @@ AttributeError: 'float' object has no attribute 'rfind'
 `_strip_role_prefix(value: str | None)` のシグネチャは `str | None` を前提とするが、上流（FMP → openbb-core → 本スクリプト）で型保証が破れている。`if not value` ガードは truthy 判定のみで、`value=float('nan')` (truthy) は通過し、後続の `value.rfind(marker)` で AttributeError。
 
 該当箇所（参考、修正は別タスクで実施）:
+
 - `shared/openbb/scripts/insider.py:158-174` `_strip_role_prefix`
 
 ## 望ましい挙動（accuracy-first）

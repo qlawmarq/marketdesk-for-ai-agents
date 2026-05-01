@@ -33,7 +33,7 @@ Root keys (always present on success):
 
 Optional root keys:
 
-- `warnings[]` — appended on partial failure. Each entry: `{symbol, error, error_category}`. `symbol` is `null` for single-query wrappers.
+- `warnings[]` — appended on partial failure or when a wrapper surfaces a non-error data-quality signal. Row-failure entries: `{symbol, error, error_category}` (`symbol` is `null` for single-query wrappers). Non-error signals use `{symbol, warning_type, …wrapper-specific keys}` and omit `error` / `error_category`; consumers should branch on the presence of `warning_type` vs `error_category` to distinguish the two. Example non-error `warning_type` values: `"partial_filing_window"` (`scripts/institutional.py`, per-record 13F filing-window marker).
 - `error`, `error_category`, `details` — present **only on fatal exit** (code 2). When `error` is set, `data` is omitted.
 
 `aggregate_emit` (multi-symbol wrappers): each `data.results[i]` is `{symbol, provider, ok, records|error, error_type?, error_category?}`. Rows with `ok: false` carry `error_category`; the same failure is mirrored into top-level `warnings[]`. `single_emit` (single-query wrappers): `data.results` is a flat list of records on success and `[]` on non-fatal failure (with the failure surfaced in `warnings[]`).
